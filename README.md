@@ -23,6 +23,8 @@ mkdir lambda_playwright && cd lambda_playwright
 npm init -y
 npm install playwright-core @sparticuz/chromium aws-sdk
 
+# このリポジトリのindex.jsをlambda_playwrightに格納
+
 # Lambda 用の ZIP を作成
 zip -r screenshot_lambda.zip index.js node_modules/
 ```
