@@ -18,11 +18,11 @@ exports.handler = async (event) => {
 
     let browser;
     try {
-        // ファイル名を URL のパスに基づいて作成
+        // サムネイル画像ファイル名を URL のパスに基づいて作成
         const urlObj = new URL(url);
-        let path = urlObj.pathname.replace(/^\/|\/$/g, "").replace(/\//g, "_"); // `/` を `_` に変換
-        path = path || "index"; // ルートURLなら `index` にする
-        const fileName = `screenshots/${urlObj.hostname}/${path}.jpg`; // JPEG 形式に変更
+        let path = urlObj.pathname.replace(/^\/|\/$/g, "").replace(/\//g, "_");
+        path = path || "index"; // ルートURLなら `index`
+        const fileName = `screenshots/${urlObj.hostname}/${path}.jpg`;
 
         // 既に S3 に同じファイルがあるかチェック
         const fileExists = await checkS3FileExists(BUCKET_NAME, fileName);
@@ -30,7 +30,7 @@ exports.handler = async (event) => {
             console.log(`File exists: ${fileName}. Returning existing screenshot.`);
             return {
                 statusCode: 200,
-                body: JSON.stringify({ screenshotUrl: `https://${BUCKET_NAME}.s3.amazonaws.com/${fileName}` }),
+                body: JSON.stringify({ screenshotUrl: getPresignedUrl(BUCKET_NAME, fileName) }),
             };
         }
 
@@ -44,35 +44,26 @@ exports.handler = async (event) => {
         const page = await browser.newPage();
         await page.setViewportSize({ width: 1280, height: 1000 });
 
-        // ページへ遷移（リトライあり）
         await safeGoto(page, url, 3);
 
-        // ページの高さを1000pxに制限
-        await page.evaluate(() => {
-            document.body.style.height = "1000px";
-            document.documentElement.style.height = "1000px";
-            document.body.style.overflow = "hidden";
-        });
-
-        // 画質を落としたスクリーンショットを撮る
         const screenshotBuffer = await page.screenshot({
             fullPage: false,
             type: "jpeg",
-            quality: 30,   // 画質を落とす（0～100）
+            quality: 30,
         });
 
-        //  S3 にアップロード
+        // S3 にアップロード（公開しない）
         await s3.putObject({
             Bucket: BUCKET_NAME,
             Key: fileName,
             Body: screenshotBuffer,
             ContentType: "image/jpeg",
-            Metadata: { "x-amz-acl": "BucketOwnerFullControl" }
+            ACL: "private"
         }).promise();
 
         return {
             statusCode: 200,
-            body: JSON.stringify({ screenshotUrl: `https://${BUCKET_NAME}.s3.amazonaws.com/${fileName}` }),
+            body: JSON.stringify({ screenshotUrl: getPresignedUrl(BUCKET_NAME, fileName) }),
         };
     } catch (error) {
         console.error("Error capturing screenshot:", error);
@@ -88,23 +79,23 @@ exports.handler = async (event) => {
 };
 
 /**
- *  S3 にファイルが存在するかチェック
+ * S3 にファイルが存在するかチェック
  */
 async function checkS3FileExists(bucket, key) {
     try {
         await s3.headObject({ Bucket: bucket, Key: key }).promise();
-        return true; // ファイルが存在する
+        return true;
     } catch (error) {
         if (error.code === "NotFound") {
-            return false; // ファイルが存在しない
+            return false;
         }
         console.error("Error checking S3 file:", error);
-        throw error; // その他のエラーはスロー
+        throw error;
     }
 }
 
 /**
- *  `page.goto()` のリトライ処理
+ * `page.goto()` のリトライ処理
  */
 async function safeGoto(page, url, retries = 3) {
     for (let i = 0; i < retries; i++) {
@@ -116,4 +107,15 @@ async function safeGoto(page, url, retries = 3) {
         }
     }
     throw new Error(`Failed to load ${url} after ${retries} attempts`);
+}
+
+/**
+ * Presigned URL を発行（1時間有効）
+ */
+function getPresignedUrl(bucket, key) {
+    return s3.getSignedUrl("getObject", {
+        Bucket: bucket,
+        Key: key,
+        Expires: 3600 // 1時間 (3600秒)
+    });
 }
